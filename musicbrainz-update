@@ -1,7 +1,10 @@
 #!/bin/bash
 
 ##
-# This script 
+# This script is designed to either be run manually or from cron.
+# It will automatically update your musicbrainz server with the latest DB.
+#
+# See more at: https://github.com/hongkongkiwi/musicbrainz-update-script
 ##
 
 DL="curl"
