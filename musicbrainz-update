@@ -1,0 +1,137 @@
+#!/bin/bash
+
+##
+# This script 
+##
+
+DL="curl"
+OPTS="-o"
+FILES_TO_DOWNLOAD=("mbdump.tar.bz2" "mbdump-editor.tar.bz2" "mbdump-derived.tar.bz2")
+LATEST_FILE="/var/tmp/musicbrainz-latest"
+DOWNLOAD_DIR="/tmp/musicbrainz"
+MIRROR_SERVERS=("http://ftp.musicbrainz.org/pub/musicbrainz/data/fullexport" "http://mirrors.dotsrc.org/MusicBrainz/data/fullexport" "http://data.musicbrainz.org/pub/musicbrainz/data/fullexport" "http://ftp.slackware.com/pub/musicbrainz/data/fullexport" "http://ftp.osuosl.org/pub/musicbrainz/data/fullexport" "http://ftp.linuxfromscratch.org/pub/musicbrainz/data/fullexport")
+# Change this to the non-root user, or blank if you don't want to change the user
+MB_USER="musicbrainz"
+
+# Don't change these unless you know what your doing!
+GREP="/bin/grep"
+
+compare_nums()
+{
+   # Function to compare two numbers (float or integers) by using awk.
+   # The function will not print anything, but it will return 0 (if the comparison is true) or 1
+   # (if the comparison is false) exit codes, so it can be used directly in shell one liners.
+   #############
+   ### Usage ###
+   ### Note that you have to enclose the comparison operator in quotes.
+   #############
+   # compare_nums 1 ">" 2 # returns false
+   # compare_nums 1.23 "<=" 2 # returns true
+   # compare_nums -1.238 "<=" -2 # returns false
+   #############################################
+   num1=$1
+   op=$2
+   num2=$3
+   E_BADARGS=65
+
+   # Make sure that the provided numbers are actually numbers.
+   if ! [[ $num1 =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then >&2 echo "$num1 is not a number"; return $E_BADARGS; fi
+   if ! [[ $num2 =~ ^-?[0-9]+([.][0-9]+)?$ ]]; then >&2 echo "$num2 is not a number"; return $E_BADARGS; fi
+
+   # If you want to print the exit code as well (instead of only returning it), uncomment
+   # the awk line below and comment the uncommented one which is two lines below.
+   #awk 'BEGIN {print return_code=('$num1' '$op' '$num2') ? 0 : 1; exit} END {exit return_code}'
+   awk 'BEGIN {return_code=('$num1' '$op' '$num2') ? 0 : 1; exit} END {exit return_code}'
+   return_code=$?
+   return $return_code
+}
+
+# Check if run from cron
+if [ -z "$PS1" ]; then
+  OPTS="$OPTS"
+fi
+
+# Check if run by root
+SUDO=""
+temp_file="/tmp/out.$$"
+if [[ $EUID -eq 0 ]]; then
+  if [ "$MB_USER" != "" ]; then
+    echo "Running script commands as user $MB_USER"
+    SUDO="sudo -u $MB_USER -H"
+  fi
+fi
+
+echo "Selecting fastest mirror server..."
+fastest_server=""
+best_ping_time=0
+domain=""
+for url in "${MIRROR_SERVERS[@]}"
+do
+  server=${url#"http://"}
+  server=${server%%/*}
+  ping_time=$(ping -c 4 "$server" | tail -1| awk '{print $4}' | cut -d '/' -f 2)
+  ping_time=$(expr "$ping_time")
+  if [ $best_ping_time = 0 ]; then
+    best_ping_time=$ping_time
+    fastest_server="$url"
+    domain="$server"
+  else
+    if compare_nums $best_ping_time ">" $ping_time; then
+      best_ping_time=$ping_time
+      fastest_server="$url"
+      domain="$server"
+    fi
+  fi
+done
+
+echo "Closest Server Found: http://${domain} (${best_ping_time}ms)"
+
+# Get latest dump date
+latest=$(wget "$fastest_server/LATEST" -q -O -)
+if [[ "$latest" == "" ]]; then
+  echo "Could not get the latest file date from musicbrainz!"
+  exit 1
+fi
+
+previous_latest=$([[ -f "$LATEST_FILE" ]] && $SUDO cat "$LATEST_FILE")
+
+if [[ "$latest" == "$previous_latest" && $1 != "-f" ]]; then
+  echo "We already have the latest downloads"
+  exit 0
+fi
+
+if [ ! -d "$DOWNLOAD_DIR" ]; then
+  $SUDO mkdir -p "$DOWNLOAD_DIR"
+fi
+
+for file in "${FILES_TO_DOWNLOAD[@]}"
+do
+  filepath="$DOWNLOAD_DIR/$latest_$file"
+  url="$fastest_server/$latest/$file"
+  remote_size=$($SUDO curl -sI "$url" | grep "Content-Length" | tr -d ' ' | cut -f2 -d':')
+  local_size=""
+  if [ -f "$filepath" ]; then
+    local_size=$($SUDO wc -c <"$filepath")
+  fi
+  if [ "$remote_size" != "$local_size" ]; then
+    echo "Downloading file $file..."
+    $SUDO "$DL" "$OPTS" "$filepath" "$url"
+  else
+    echo "Skipping download of file $file as it already exists"
+  fi
+done
+
+echo "$latest" > "$LATEST_FILE"
+
+echo "Importing Database into MusicBrainz server..."
+
+
+echo "Deleting temp files..."
+for file in "${FILES_TO_DOWNLOAD[@]}"
+do
+  filepath="$DOWNLOAD_DIR/$latest_$file"
+  rm "$filepath"
+done
+$DUO rmdir "$DOWNLOAD_DIR"
+
+echo "MusicBrainz data update complete!"
